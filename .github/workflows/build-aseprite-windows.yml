@@ -16,7 +16,7 @@ on:
         type: string
         default: ""
 
-      # Most common asset name; if it fails, the workflow will print available assets.
+      # If this fails, the workflow prints the available asset names.
       skia_asset_name:
         description: "Exact Skia asset name inside that release"
         required: true
@@ -27,7 +27,7 @@ on:
         description: "CMake build type"
         required: true
         type: choice
-        default: "Release"
+        default: "RelWithDebInfo"
         options: ["RelWithDebInfo", "Release", "Debug"]
 
 jobs:
@@ -44,7 +44,7 @@ jobs:
           path: aseprite
           submodules: recursive
 
-      - name: Force version string (so title shows chosen ref)
+      - name: Force version string (title shows chosen version)
         shell: pwsh
         working-directory: aseprite
         run: |
@@ -60,7 +60,11 @@ jobs:
           if (-not (Test-Path $p)) { throw "Missing $p" }
 
           $s = Get-Content $p -Raw
-          $new = [regex]::Replace($s, 'set\s*\(\s*ver\s+"[^"]*"\s*\)', "set(ver `"$ver`")")
+
+          # Replace: set(VERSION "1.x-dev") -> set(VERSION "1.3.16")
+          $pattern = 'set\s*\(\s*VERSION\s+"[^"]*"\s*\)'
+          $replacement = "set(VERSION `"$ver`")"
+          $new = [regex]::Replace($s, $pattern, $replacement)
 
           if ($new -eq $s) {
             Write-Host "Couldn't patch $p automatically; file content:"
@@ -146,7 +150,7 @@ jobs:
           Remove-Item "$skiaRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
           Copy-Item (Join-Path $x "*") $skiaRoot -Recurse -Force
 
-          # Robustly locate skia.lib (handles different out folder names)
+          # Robust locate skia.lib (handles Release-x64 / Debug-x64, etc.)
           $skiaLib = Get-ChildItem "C:\deps\skia\out" -Recurse -Filter "skia.lib" -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
@@ -235,7 +239,7 @@ jobs:
           if (-not (Test-Path $exe)) { throw "Expected $exe" }
           & $exe --version
 
-      - name: Zip build/bin (portable folder)
+      - name: Zip build/bin
         shell: pwsh
         run: |
           $bin = "aseprite\build\bin"
