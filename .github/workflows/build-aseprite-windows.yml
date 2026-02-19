@@ -1,0 +1,131 @@
+name: Build Aseprite (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      aseprite_ref:
+        description: "Aseprite ref (tag/branch/commit). Example: v1.3.16"
+        required: true
+        type: string
+        default: "main"
+
+      # Aseprite requires a compiled Skia from a specific aseprite-mXXX branch (see INSTALL.md). [page:1]
+      # The aseprite/skia repo publishes pre-built binary packages in Releases. [page:1] [page:2]
+      skia_release_tag:
+        description: "aseprite/skia release tag to download (e.g. Skia-m124). Must match what Aseprite expects."
+        required: true
+        type: string
+        default: "Skia-m124"
+
+      skia_asset_pattern:
+        description: "Asset filename glob to download from that release (adjust if needed)."
+        required: true
+        type: string
+        default: "*windows*x64*.zip"
+
+      build_type:
+        description: "CMake build type"
+        required: true
+        type: choice
+        default: "RelWithDebInfo"
+        options:
+          - "RelWithDebInfo"
+          - "Release"
+          - "Debug"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout Aseprite (selected ref)
+        uses: actions/checkout@v4
+        with:
+          repository: aseprite/aseprite
+          ref: ${{ inputs.aseprite_ref }}
+          path: aseprite
+          submodules: recursive
+
+      - name: Install build tools (Ninja, CMake)
+        shell: pwsh
+        run: |
+          choco install -y ninja cmake
+
+      - name: Setup MSVC (VS 2022)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Download + extract prebuilt Skia
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $skiaDir = "C:\deps\skia"
+          New-Item -ItemType Directory -Force -Path $skiaDir | Out-Null
+
+          $tmp = Join-Path $env:RUNNER_TEMP "skia_dl"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+
+          gh release download "${{ inputs.skia_release_tag }}" `
+            -R "aseprite/skia" `
+            -p "${{ inputs.skia_asset_pattern }}" `
+            -D "$tmp"
+
+          $zip = Get-ChildItem "$tmp" -Filter "*.zip" | Select-Object -First 1
+          if (-not $zip) { throw "No Skia zip downloaded. Adjust skia_release_tag / skia_asset_pattern." }
+
+          Expand-Archive -Path $zip.FullName -DestinationPath $skiaDir -Force
+
+          # Validate expected layout for the x64 build
+          $lib = Join-Path $skiaDir "out\Release-x64\skia.lib"
+          if (-not (Test-Path $lib)) {
+            Write-Host "Skia folder content:"
+            Get-ChildItem -Recurse -Depth 3 $skiaDir | Select-Object FullName
+            throw "Expected Skia library at $lib (adjust asset or paths if the package layout differs)."
+          }
+
+      - name: Configure (CMake + Ninja, Skia backend)
+        shell: pwsh
+        working-directory: aseprite
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          cd build
+
+          cmake `
+            -G Ninja `
+            -DCMAKE_BUILD_TYPE="${{ inputs.build_type }}" `
+            -DLAF_BACKEND=skia `
+            -DSKIA_DIR="C:\deps\skia" `
+            -DSKIA_LIBRARY_DIR="C:\deps\skia\out\Release-x64" `
+            -DSKIA_LIBRARY="C:\deps\skia\out\Release-x64\skia.lib" `
+            ..
+
+      - name: Build (ninja aseprite)
+        shell: pwsh
+        working-directory: aseprite/build
+        run: |
+          ninja aseprite
+
+      - name: Package build/bin
+        shell: pwsh
+        run: |
+          $bin = "aseprite\build\bin"
+          $exe = Join-Path $bin "aseprite.exe"
+          if (-not (Test-Path $exe)) { throw "Expected $exe" }
+
+          # Quick sanity check
+          & $exe --version
+
+          $zipName = "aseprite-windows-x64-${{ inputs.aseprite_ref }}.zip"
+          if (Test-Path $zipName) { Remove-Item $zipName -Force }
+          Compress-Archive -Path "$bin\*" -DestinationPath $zipName
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aseprite-windows-x64
+          path: aseprite-windows-x64-*.zip
+          retention-days: 14
+          if-no-files-found: error
