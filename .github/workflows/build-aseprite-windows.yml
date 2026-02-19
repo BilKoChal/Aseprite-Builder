@@ -16,12 +16,12 @@ on:
         type: string
         default: ""
 
-      # Adjust this if your chosen skia release uses different naming
-      skia_asset_pattern:
-        description: "Skia asset glob to download (Windows x64 Release zip)"
+      # Use an exact asset name by default (most reliable)
+      skia_asset_name:
+        description: "Skia asset name in that release"
         required: true
         type: string
-        default: "*windows*x64*.zip"
+        default: "Skia-Windows-Release-x64.zip"
 
       build_type:
         description: "CMake build type"
@@ -79,8 +79,6 @@ jobs:
           Write-Host "Detected required Skia branch: aseprite-m$skiaM"
 
           $releases = gh api "repos/aseprite/skia/releases" --paginate | ConvertFrom-Json
-
-          # Commonly tags are like m124-...; pick first match
           $hit = $releases | Where-Object { $_.tag_name -like "m$skiaM-*" } | Select-Object -First 1
           if (-not $hit) {
             throw "No aseprite/skia release tag like m$skiaM-* found. Set inputs.skia_release_tag manually."
@@ -89,6 +87,7 @@ jobs:
           "SKIA_TAG=$($hit.tag_name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Download + extract Skia (prebuilt)
+        id: skiapaths
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,35 +98,46 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path $tmp, $x, $skiaRoot | Out-Null
 
+          # Fetch the release JSON so we can see the exact asset list
+          $rel = gh api "repos/aseprite/skia/releases/tags/${{ steps.skia.outputs.SKIA_TAG }}" | ConvertFrom-Json
+          $want = "${{ inputs.skia_asset_name }}".Trim()
+
+          $asset = $rel.assets | Where-Object { $_.name -eq $want } | Select-Object -First 1
+          if (-not $asset) {
+            Write-Host "Available assets in $($rel.tag_name):"
+            $rel.assets | ForEach-Object { Write-Host " - $($_.name)" }
+            throw "Asset '$want' not found. Change inputs.skia_asset_name to one of the listed assets."
+          }
+
           gh release download "${{ steps.skia.outputs.SKIA_TAG }}" `
             -R "aseprite/skia" `
-            -p "${{ inputs.skia_asset_pattern }}" `
+            -p "$($asset.name)" `
             -D "$tmp"
 
           $zip = Get-ChildItem "$tmp" -Filter "*.zip" | Select-Object -First 1
-          if (-not $zip) { throw "No Skia zip downloaded. Adjust skia_asset_pattern or set skia_release_tag." }
+          if (-not $zip) { throw "Skia zip download failed unexpectedly." }
 
           Expand-Archive -Path $zip.FullName -DestinationPath $x -Force
 
-          # Find a folder that contains out\Release-x64\skia.lib
-          $candidate = Get-ChildItem $x -Directory -Recurse | Where-Object {
-            Test-Path (Join-Path $_.FullName "out\Release-x64\skia.lib")
-          } | Select-Object -First 1
-
-          if (-not $candidate) {
-            if (Test-Path (Join-Path $x "out\Release-x64\skia.lib")) {
-              $candidate = Get-Item $x
-            } else {
-              throw "Can't locate out\Release-x64\skia.lib inside extracted Skia."
-            }
-          }
-
+          # Copy extracted content into C:\deps\skia
           Remove-Item "$skiaRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $candidate.FullName "*") $skiaRoot -Recurse -Force
+          Copy-Item (Join-Path $x "*") $skiaRoot -Recurse -Force
 
-          if (-not (Test-Path "C:\deps\skia\out\Release-x64\skia.lib")) {
-            throw "Skia install failed: C:\deps\skia\out\Release-x64\skia.lib not found."
+          # Robustly locate skia.lib (handles Release-x64 vs Debug-x64 differences)
+          $skiaLib = Get-ChildItem "C:\deps\skia\out" -Recurse -Filter "skia.lib" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $skiaLib) {
+            Write-Host "Skia out directory:"
+            Get-ChildItem "C:\deps\skia" -Recurse -Depth 4 | Select-Object FullName
+            throw "Couldn't find skia.lib under C:\deps\skia\out"
           }
+
+          $skiaLibDir = Split-Path $skiaLib.FullName -Parent
+
+          "SKIA_DIR=C:\deps\skia"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "SKIA_LIBRARY=$($skiaLib.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "SKIA_LIBRARY_DIR=$skiaLibDir"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Configure (CMake + Ninja)
         shell: pwsh
@@ -140,9 +150,9 @@ jobs:
             -G Ninja `
             -DCMAKE_BUILD_TYPE="${{ inputs.build_type }}" `
             -DLAF_BACKEND=skia `
-            -DSKIA_DIR="C:\deps\skia" `
-            -DSKIA_LIBRARY_DIR="C:\deps\skia\out\Release-x64" `
-            -DSKIA_LIBRARY="C:\deps\skia\out\Release-x64\skia.lib" `
+            -DSKIA_DIR="${{ steps.skiapaths.outputs.SKIA_DIR }}" `
+            -DSKIA_LIBRARY_DIR="${{ steps.skiapaths.outputs.SKIA_LIBRARY_DIR }}" `
+            -DSKIA_LIBRARY="${{ steps.skiapaths.outputs.SKIA_LIBRARY }}" `
             ..
 
       - name: Build (ninja aseprite)
@@ -162,9 +172,9 @@ jobs:
             return $null
           }
 
-          # Prefer "where" (works if OpenSSL bin is on PATH), otherwise check common install dirs.
           $libcrypto = $null
           try { $libcrypto = (where.exe libcrypto-3-x64.dll 2>$null | Select-Object -First 1) } catch {}
+
           if (-not $libcrypto) {
             $libcrypto = Find-FirstExistingFile @(
               "C:\Program Files\OpenSSL-Win64\bin\libcrypto-3-x64.dll",
@@ -186,7 +196,6 @@ jobs:
           Copy-Item $libcrypto $bin -Force
           Copy-Item $libssl    $bin -Force
 
-          # Copy OpenSSL 3 provider modules if present (helps avoid follow-up errors)
           $modulesDir = Find-FirstExistingFile @(
             (Join-Path $opensslRoot "lib\ossl-modules"),
             "C:\Program Files\OpenSSL-Win64\lib\ossl-modules",
