@@ -16,16 +16,18 @@ It will:
 
 ## How to build your own Aseprite
 
-1. Go to this repo’s **Actions** tab.
-2. Select the workflow named `Build Aseprite (Windows x64)`.
-3. Click **Run workflow** (top-right).
-4. Fill in:
-   - `aseprite_ref`: version to build, e.g. `v1.3.16`, `v1.3.17-beta2`, `main`.
+1. **Fork this repo** to your GitHub account.
+2. Go to your fork’s **Actions** tab.
+3. Select the workflow named `Build Aseprite (Windows x64)`.
+4. Click **Run workflow** (top-right).
+5. Fill in:
+   - `aseprite_ref`: version to build, e.g. `v1.3.16`, `v1.3.17-beta2`.
    - `skia_release_tag`: usually leave empty (auto).
    - `skia_asset_name`: default should work; if a run fails it will print valid names.
-   - `build_type`: usually `RelWithDebInfo` or `Release`.
-5. Click **Run workflow**.
-6. Wait 20-30 minutes for compiling.
+   - `build_type`: usually `Release`.
+6. Click **Run workflow**.
+7. Wait 20–30 minutes for compiling.
+
 
 When it finishes:
 
