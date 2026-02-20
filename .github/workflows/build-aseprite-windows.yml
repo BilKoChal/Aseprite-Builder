@@ -27,7 +27,7 @@ on:
         description: "CMake build type"
         required: true
         type: choice
-        default: "RelWithDebInfo"
+        default: "Release"
         options: ["RelWithDebInfo", "Release", "Debug"]
 
 jobs:
