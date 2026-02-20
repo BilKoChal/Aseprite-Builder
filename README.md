@@ -7,7 +7,6 @@ It will:
 - Clone `aseprite/aseprite` at the version you choose (tag/branch/commit).
 - Auto-detect the correct Skia branch from `INSTALL.md` and download a prebuilt Skia package.
 - Build Aseprite with CMake + Ninja on `windows-latest`.
-- Patch the version so the window title shows the selected version (e.g. `Aseprite v1.3.16` instead of `v1.x-dev`).
 - Bundle required OpenSSL DLLs so the EXE runs on a clean Windows install.
 - Upload a zip with `aseprite.exe` and other runtime files.
 
@@ -26,6 +25,7 @@ It will:
    - `skia_asset_name`: default should work; if a run fails it will print valid names.
    - `build_type`: usually `RelWithDebInfo` or `Release`.
 5. Click **Run workflow**.
+6. Wait 20-30 minutes for compiling.
 
 When it finishes:
 
